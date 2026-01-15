@@ -8,13 +8,13 @@ else
 	$(error PS5_PAYLOAD_SDK is undefined)
 endif
 
-CFLAGS += -Wall -Werror -Iinclude -I../shsrv
-SRCS = src/sshsvr.c src/session.c src/builtins.c src/base64.c ../shsrv/elfldr.c ../shsrv/pt.c
+CFLAGS += -Wall -Werror -Iinclude
+SRCS = src/sshsvr.c src/session.c src/builtins.c src/base64.c shsrv/elfldr.c shsrv/pt.c
 OBJS = $(SRCS:.c=.o)
-TARGET = sshsvr-ps5.elf
+TARGET = ps5-ssh-srvr.elf
 KILL_SRC = tools/kill_sshsvr.c
 KILL_OBJ = $(KILL_SRC:.c=.o)
-KILL_TARGET = kill_sshsvr-ps5.elf
+KILL_TARGET = kill_ps5-ssh-srvr.elf
 
 all: $(TARGET)
 
