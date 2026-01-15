@@ -1,10 +1,67 @@
-# Pseudo SSH Server Payload (Draft)
+# Pseudo SSH Server Payload
 
-This is an initial draft of an *unencrypted* SSH-like server payload for a jailbroken PS5 (firmware 5.10 + etaHEN + elfldr). It does **not** implement the SSH protocol. It only offers:
+This is an *unencrypted* SSH-like server payload for a jailbroken PS5 (firmware <= 9.60 + etaHEN). It does **not** implement the SSH protocol. It only offers:
 
 * TCP listener (default port 2222) providing a minimal interactive session
-* Commands: `help`, `exit`, `exec <prog> [args...]`
-* Very naive program spawn searching a few hard-coded paths
+* Commands: `help`, `install`, `ps`, `exec <prog> [args...]`
+
+## Deploy
+
+Ensure etaHEN and ELF Loader (elfldr.elf) are running and listening on Port 9021 (Default). Use your favorite tool, like socat, netcatgui, etc, to deliver the payload to your PS5.
+
+For example, if you have command-line socat on your system, you can use command-line:
+```bash
+socat.exe -t 99999999 - TCP:192.168.50.5:9021 < "ps5-ssh-srvr.elf"
+```
+
+This will start the server on your PS5, listening on Port 2222.
+
+Can be traced in KLOG:
+`[sshsvr] sshsvr listening on port 2222 (pid=100)`
+ 
+## Usage
+
+Connect via telnet from your system on the same network as PS5:
+
+`telnet <your-IP-address> 2222`
+
+Sample output using sample IP:
+```
+$ telnet 192.168.50.5 2222
+Trying 192.168.50.5...
+Connected to 192.168.50.5.
+Escape character is '^]'.
+Pseudo-SSH (unencrypted) - remote 192.168.50.7
+Type 'help' for builtins.
+$ 
+```
+
+Type `help` to display a list of commands you can use. 
+
+```
+$ help
+help       - Show help
+exit       - Exit session
+ls         - List directory
+ll         - Alias for ls -l
+rm         - Remove files (-r)
+cp         - Copy files (-r)
+mv         - Move/rename
+mkdir      - Create directories (-p)
+pwd        - Print working directory
+cd         - Change directory
+cat        - Show file contents
+ps         - List processes
+put        - Receive base64 file
+get        - Send base64 file
+install    - Install PKG via etaHEN DPI (9090/12800)
+klogtail   - Tail kernel log (stub)
+execelf    - Execute ELF payload
+debugelf   - Execute ELF (debug mode)
+kill       - Send signal (kill <pid> [sig])
+serverctl  - Control server (start/stop/restart/status)
+```
+
 
 ## Build
 
@@ -15,11 +72,6 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 make -C sshsvr
 ```
 
-## Deploy
-
-```bash
-make -C sshsvr deploy PS5_HOST=your.ps5.ip PS5_PORT=9021
-```
 
 ## Roadmap Ideas
 
