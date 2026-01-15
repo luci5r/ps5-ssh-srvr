@@ -62,6 +62,15 @@ kill       - Send signal (kill <pid> [sig])
 serverctl  - Control server (start/stop/restart/status)
 ```
 
+## Feature
+A feature command not available in the original "shsrv" payload is the ability to INSTALL PKG (PS4 Backups) files via the command-line. This feature uses the etaHEN DPI capability to install the PKG.
+
+By default, the server looks at `/mnt/USB0` for PKG files, and can be simply used as:
+
+`install my-ps4-backup.pkg`
+
+### Usage scenario
+Often I have PKGs on my exFAT USB Drive attached to my PS5. Instead of sitting in front of my PS5 and waiting to install them, I'm able to VNC or login to my home PC remotely while I'm at work, and use the server to install PKGs. 
 
 ## Build
 
@@ -69,7 +78,7 @@ Ensure the PS5 payload SDK environment variable is set:
 
 ```bash
 export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
-make -C sshsvr
+make
 ```
 
 
