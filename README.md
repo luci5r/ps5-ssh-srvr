@@ -5,6 +5,9 @@ This is an *unencrypted* SSH-like server payload for a jailbroken PS5 (firmware 
 * TCP listener (default port 2222) providing a minimal interactive session
 * Commands: `help`, `install`, `ps`, `exec <prog> [args...]`
 
+## Credits
+All credits for the original 
+
 ## Deploy
 
 Ensure etaHEN and ELF Loader (elfldr.elf) are running and listening on Port 9021 (Default). Use your favorite tool, like socat, netcatgui, etc, to deliver the payload to your PS5.
