@@ -16,6 +16,7 @@
 #include <stdarg.h>   // for fallback dprintf
 #include <errno.h>
 #include <sys/sysctl.h>
+#include <ps5/klog.h>
 
 #if __has_include(<sys/user.h>)
 #include <sys/user.h>
@@ -24,6 +25,7 @@
 
 #include <ps5/klog.h>
 #include <ps5/kernel.h>
+#include <libgen.h>
 
 #include "sshsvr.h"
 #include "session.h"
@@ -41,7 +43,13 @@ static void sigterm_handler(int sig) {
 }
 
 static int write_pidfile(pid_t pid) {
-  FILE *f = fopen(PIDFILE, "w");
+  char path[PATH_MAX];
+  strcpy(path, PIDFILE);
+  char *d = dirname(path);
+  if (d && d[0] && strcmp(d, ".") != 0 && strcmp(d, "/") != 0) {
+    mkdir(d, 0755);
+  }
+  FILE *f = fopen(PIDFILE, "wb");
   if(!f) return -1;
   fprintf(f, "%d\n", pid);
   fclose(f);
@@ -211,6 +219,8 @@ void sshsvr_run(uint16_t port, int daemonize, int force_replace) {
     return;
   }
   klog_printf("sshsvr listening on port %d (pid=%d)\n", port, g_listener_pid);
+  write_pidfile(g_listener_pid);
+  klog_printf("pid written");
 
   while(g_running) {
     struct sockaddr_in caddr; socklen_t clen = sizeof(caddr);

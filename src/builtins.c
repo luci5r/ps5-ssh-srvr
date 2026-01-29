@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <sys/user.h>
 #include <sys/socket.h>     // added
+#include <sys/user.h>       // for kinfo_proc
 #include <netinet/in.h>     // added
 #include <arpa/inet.h>      // added
 #include <sys/select.h>  // for select()
@@ -25,6 +26,10 @@
 #include "../shsrv/pt.h"
 #include "util.h"   // added for dprintf
 #include "sshsvr.h"   // add for sshsvr_run prototype / PIDFILE
+#include <ps5/klog.h>  // for klog_printf
+
+/* Prototype for cmd_install so the table can reference it */
+static int cmd_install(int argc, char **argv);
 
 static void print_error(const char* msg) { dprintf(1, "error: %s: %s\n", msg, strerror(errno)); }
 
@@ -272,9 +277,21 @@ static int cmd_ps(int argc, char** argv) {
   if(sysctl(mib,4,buf,&len,NULL,0)<0) { print_error("sysctl data"); free(buf); return -1; }
   struct kinfo_proc* p = (struct kinfo_proc*)buf;
   int count = len / sizeof(struct kinfo_proc);
-  dprintf(1," PID   COMMAND\n");
+  dprintf(1,"  PID  PPID  PGID   SID   UID State    COMMAND\n");
   for(int i=0;i<count;i++) {
-    dprintf(1,"%5d  %s\n", p[i].ki_pid, p[i].ki_comm);
+    if(!p[i].ki_comm[0]) continue; // skip processes without command name
+    const char* state_str;
+    switch(p[i].ki_stat) {
+      case 1: state_str = "IDL"; break;
+      case 2: state_str = "RUN"; break;
+      case 3: state_str = "SLEEP"; break;
+      case 4: state_str = "STOP"; break;
+      case 5: state_str = "ZOMB"; break;
+      default: state_str = "?"; break;
+    }
+    dprintf(1,"%5d %5d %5d %5d %5d %6s %s\n",
+            p[i].ki_pid, p[i].ki_ppid, p[i].ki_pgid, p[i].ki_sid, p[i].ki_uid,
+            state_str, p[i].ki_comm);
   }
   free(buf);
   return 0;
@@ -581,6 +598,11 @@ static int dpi_send_json_9090(const char* url_or_path) {
   if(write(fd, json, strlen(json)) < 0) { close(fd); return -1; }
 
   char resp[256] = {0};
+  // Use select for timeout
+  fd_set rf; FD_ZERO(&rf); FD_SET(fd, &rf);
+  struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+  int rc = select(fd+1, &rf, NULL, NULL, &tv);
+  if(rc <= 0) { close(fd); return -1; }
   ssize_t r = read(fd, resp, sizeof(resp)-1);
   close(fd);
   if(r <= 0) return -1;
@@ -628,101 +650,255 @@ static int dpi_v2_post_url_12800(const char* url_or_path) {
   if(write(fd, body, blen) < 0) { close(fd); return -1; }
 
   char resp[1024] = {0};
+  // Use select for timeout
+  fd_set rf; FD_ZERO(&rf); FD_SET(fd, &rf);
+  struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+  int rc = select(fd+1, &rf, NULL, NULL, &tv);
+  if(rc <= 0) { close(fd); return -1; }
   ssize_t r = read(fd, resp, sizeof(resp)-1);
   close(fd);
   if(r <= 0) return -1;
 
-  // Look for Succeeded in body
-  if(strstr(resp, "Succeeded")) return 0;
+  // Look for SUCCESS in body
+  if(strstr(resp, "SUCCESS")) return 0;
   dprintf(1, "DPI v2 response:\n%s\n", resp);
   return -1;
 }
 
+// GROK Code
 static int klog_wait_install(int timeout_sec) {
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if(fd < 0) return -1;
-  struct sockaddr_in a; memset(&a,0,sizeof(a));
-  a.sin_family = AF_INET; a.sin_port = htons(9081);
-  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if(connect(fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
-    close(fd); return -1;
-  }
-  dprintf(1,"[install] watching KLOG for completion (up to %d s)...\n", timeout_sec);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
 
-  char buf[2048]; int elapsed = 0;
-  for(;;) {
-    fd_set rf; FD_ZERO(&rf); FD_SET(fd,&rf);
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    int rc = select(fd+1, &rf, NULL, NULL, &tv);
-    if(rc < 0) { close(fd); return -1; }
-    if(rc == 0) { if(++elapsed >= timeout_sec) { dprintf(1,"[install] timeout waiting for completion\n"); break; } continue; }
-    ssize_t r = read(fd, buf, sizeof(buf)-1);
-    if(r <= 0) break;
-    buf[r] = 0;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons(9081);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    // Scan line by line
-    char* s = buf;
-    while(s && *s) {
-      char* e = strchr(s, '\n');
-      if(e) *e = 0;
-      // Look for the final result line
-      if(strstr(s, "request ended (state =")) {
-        dprintf(1,"[install] %s\n", s);
-        // Try to parse state and error
-        int state = -1; unsigned err = 0xFFFFFFFF;
-        char* pstate = strstr(s, "state = ");
-        char* perr   = strstr(s, "error = 0x");
-        if(pstate) state = atoi(pstate + 8);
-        if(perr)   sscanf(perr + 9, "%x", &err);
+    if (connect(fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
         close(fd);
-        return (state == 7 && err == 0) ? 0 : -1;
-      }
-      s = e ? (e+1) : NULL;
+        dprintf(1, "[install] KLOG monitoring not available, install may still succeed\n");
+        return 0;
     }
-  }
-  close(fd);
-  return -1;
+
+    dprintf(1, "[install] watching KLOG for completion (up to %d s)...\n", timeout_sec);
+
+    char buffer[4096];          // larger buffer
+    char line[1024] = {0};      // for line accumulation
+    int line_len = 0;
+    int elapsed = 0;
+    int result = -1;
+    int final_state = -1;
+    unsigned final_err = 0xFFFFFFFF;
+
+    while (1) {
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(fd, &rf);
+
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        int rc = select(fd + 1, &rf, NULL, NULL, &tv);
+
+        if (rc < 0) {
+            close(fd);
+            return -1;
+        }
+
+        if (rc == 0) {  // timeout tick
+            if (++elapsed >= timeout_sec) {
+                dprintf(1, "[install] timeout waiting for completion\n");
+                break;
+            }
+            continue;
+        }
+
+        ssize_t r = read(fd, buffer, sizeof(buffer) - 1);
+        if (r <= 0) {
+            // connection closed or error
+            break;
+        }
+        buffer[r] = '\0';
+
+        char *p = buffer;
+        while (p < buffer + r) {
+            char *nl = strchr(p, '\n');
+            size_t chunk_len;
+
+            if (nl) {
+                chunk_len = nl - p;
+            } else {
+                chunk_len = (buffer + r) - p;
+            }
+
+            // Append to current line (protect against overflow)
+            size_t space_left = sizeof(line) - 1 - line_len;
+            size_t to_copy = chunk_len < space_left ? chunk_len : space_left;
+            memcpy(line + line_len, p, to_copy);
+            line_len += to_copy;
+            line[line_len] = '\0';
+
+            p += chunk_len;
+
+            if (nl) {
+                // We have a complete line → process it
+                char *s = line;
+
+                // Trim leading/trailing whitespace if you want (optional)
+                while (*s == ' ' || *s == '\t') s++;
+
+                // ────────────────────────────────────────────────
+                // Your desired outputs (same as before, but on full lines)
+                // ────────────────────────────────────────────────
+
+                if (strstr(s, "Staring Pre-allocation transfer")) {
+                    dprintf(1, "[install] pre-allocation transfer started.\n");
+                }
+
+                if (strstr(s, "[PlayGoCore][RequestInstall] begin")) {
+                    dprintf(1, "[install] Installation requested\n");
+                }
+
+                if (strstr(s, "application data size (")) {
+                    int bytes = 0;
+                    if (sscanf(strstr(s, "application data size (") + 23, "%d", &bytes) == 1) {
+                        double mb = bytes / 1048576.0;
+                        dprintf(1, "[install] Game Size: %.2f MB\n", mb);
+                    }
+                }
+
+                if (strstr(s, "transfer started")) {
+                    dprintf(1, "[install] transfer started\n");
+                }
+
+                // Detect completion from progress line like "started (1572864/1572864)"
+                char *prog = strstr(s, "started (");
+                if (prog) {
+                    int cur = 0, tot = 0;
+                    if (sscanf(prog + 9, "%d/%d", &cur, &tot) == 2 && cur == tot && tot > 0) {
+                        dprintf(1, "[install] Transfer completed\n");
+                    }
+                }
+
+                if (strstr(s, "Whole Process    : ")) {
+                    char *time_str = strstr(s, "Whole Process    : ") + 19;
+                    // remove trailing newline/spaces if needed
+                    char *end = time_str + strlen(time_str) - 1;
+                    while (end >= time_str && (*end == '\n' || *end == ' ')) *end-- = '\0';
+                    dprintf(1, "[install] Completed in: %s\n", time_str);
+                }
+
+                // ────────────────────────────────────────────────
+                // More robust success detection
+                // Look for patterns that indicate final status
+                // ────────────────────────────────────────────────
+                if (strstr(s, "request ended") &&
+                    strstr(s, "state =") &&
+                    strstr(s, "error = 0x")) {
+
+                    char *st_pos = strstr(s, "state = ");
+                    char *err_pos = strstr(s, "error = 0x");
+
+                    if (st_pos && err_pos) {
+                        final_state = atoi(st_pos + 8);
+                        sscanf(err_pos + 9, "%x", &final_err);
+
+                        if (final_state == 7 && final_err == 0) {
+                            result = 0;
+                        } else {
+                            result = -1;
+                        }
+                        // We found the ending line → can exit early
+                        goto finished;
+                    }
+                }
+
+                // Also accept the playgo.progress line as fallback
+                if (strstr(s, "playgo.progress.state=")) {
+                    int st = -1;
+                    unsigned er = 0xFFFFFFFF;
+                    if (sscanf(strstr(s, "state=") + 6, "%d", &st) == 1 &&
+                        strstr(s, "error_code=0x")) {
+                        sscanf(strstr(s, "error_code=0x") + 12, "%x", &er);
+                        if (st == 7 && er == 0) result = 0;
+                        else result = -1;
+                        goto finished;
+                    }
+                }
+
+                // Reset for next line
+                line_len = 0;
+                line[0] = '\0';
+                p++;  // skip the \n
+            }
+        }
+    }
+
+finished:
+    close(fd);
+
+    if (result == 0) {
+        dprintf(1, "[install] Installation completed successfully\n");
+        klog_printf("[install] Installation completed successfully\n");
+    } else if (result == -1) {
+        dprintf(1, "[install] Installation failed (state=%d, error=0x%x)\n",
+                final_state, final_err);
+        klog_printf("[install] Installation failed (state=%d, error=0x%x)\n",
+                final_state, final_err);
+    } else {
+        dprintf(1, "[install] Did not detect completion status — check manually\n");
+    }
+
+    return result;
 }
 
-// Update install to support -w (wait for completion)
-static int cmd_install(int argc, char** argv) {
-  int wait_flag = 0;
-  int i = 1;
-  for(; i<argc; i++) {
-    if(strcmp(argv[i], "-w")==0) { wait_flag = 1; continue; }
-    break;
-  }
-  if(i >= argc) {
-    dprintf(1, "usage: install [-w] <pkgfile or http(s) URL>\n");
-    return -1;
-  }
-
-  char target[PATH_MAX];
-  const char* arg = argv[i];
-  int is_url = (!strncmp(arg, "http://", 7) || !strncmp(arg, "https://", 8));
-  if(is_url || arg[0]=='/') { strncpy(target, arg, sizeof(target)-1); target[sizeof(target)-1]=0; }
-  else { snprintf(target, sizeof(target), "/mnt/usb0/%s", arg); }
-
-  if(!is_url) {
-    struct stat st;
-    if(stat(target, &st) < 0) { print_error(target); return -1; }
-  }
-
-  dprintf(1, "Installing: %s\n", target);
-
-  if(dpi_send_json_9090(target) == 0 || dpi_v2_post_url_12800(target) == 0) {
-    dprintf(1, "Install started. See on-screen notifications.\n");
-    if(wait_flag) {
-      int rc = klog_wait_install(600); // wait up to 10 minutes
-      dprintf(1, rc==0 ? "[install] completed successfully\n"
-                       : "[install] completed with errors (check KLOG/UI)\n");
-      return rc;
+static int cmd_install(int argc, char **argv) {
+    int wait_flag = 0;
+    int i = 1;
+    for (; i < argc; i++) {
+        if (strcmp(argv[i], "-w") == 0) {
+            wait_flag = 1;
+            continue;
+        }
+        break;
     }
-    return 0;
-  }
+    if (i >= argc) {
+        dprintf(1, "usage: install [-w] <pkgfile or http(s) URL>\n");
+        return -1;
+    }
 
-  dprintf(1, "DirectPKGInstaller not reachable (9090/12800). Enable it and retry.\n");
-  return -1;
+    char target[PATH_MAX];
+    const char *arg = argv[i];
+    int is_url = (!strncmp(arg, "http://", 7) || !strncmp(arg, "https://", 8));
+    if (is_url || arg[0] == '/') {
+        strncpy(target, arg, sizeof(target) - 1);
+        target[sizeof(target) - 1] = '\0';
+    } else {
+        snprintf(target, sizeof(target), "/mnt/usb0/%s", arg);
+    }
+
+    if (!is_url) {
+        struct stat st;
+        if (stat(target, &st) < 0) {
+            print_error(target);
+            return -1;
+        }
+    }
+
+    dprintf(1, "Installing: %s\n", target);
+    dprintf(1, "Starting installation sequence for %s\n", target);
+
+    if (dpi_send_json_9090(target) == 0 || dpi_v2_post_url_12800(target) == 0) {
+        dprintf(1, "Install started. See on-screen notifications.\n");
+        if (wait_flag) {
+            int rc = klog_wait_install(600);  // up to 10 min
+            return rc;
+        }
+        return 0;
+    }
+
+    dprintf(1, "DirectPKGInstaller not reachable (9090/12800). Enable it and retry.\n");
+    return -1;
 }
 /* --- end install block --- */
 

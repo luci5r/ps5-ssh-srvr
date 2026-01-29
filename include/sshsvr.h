@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-#define SSHSVR_PIDFILE "/data/sshsvr.pid"
+#define SSHSVR_PIDFILE "/data/tmp/sshsvr.pid"
 #ifndef SSHSVR_DEFAULT_PORT
 #define SSHSVR_DEFAULT_PORT 2222
 #endif
